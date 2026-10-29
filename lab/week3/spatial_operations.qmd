@@ -97,7 +97,14 @@ nz_height <- spData::nz_height
 ```{r}
 # Filter to the region of Canterburt 
 canterbury <- nz |> 
-  filter(Name == "Canterbury")
+  filter(Name == "Canterbury") 
+
+cwc <- nz |> 
+  filter(Name == "Canterbury" | Name == "West Coast") 
+```
+
+```{r}
+test <- st_intersects(x = nz_height, y = cwc)
 ```
 
 ```{r}
@@ -225,20 +232,30 @@ Joins are a common way to link different data sources. Up until now, we have bee
 With spatial data, we can join based on the `geometry` columns using topological relationships using the `st_join()` function. By default `st_join()` will join based on geometries that intersect, but can accommodate other topological relationships by changing the `join = ` argument. By default `st_join()` performs left joins, but can perform inner joins by setting `left = FALSE`.
 
 ```{r}
+# Specify join based on geometry
+st_join(x, y, join = st_within)
 
+# Specify inner join 
+st_join(x, y, left = FALSE)
 ```
 
 
 Let's consider the scenario where we would like to know which region each of the highest points is located in. We can left join the `nz` dataset (polygons of NZ's regions) onto the `nz_height` dataset (points of highest points in the county).
 
 ```{r}
+nz_height_left_join <- st_join(nz_height, nz) |> 
+  select(id = t50_fid, elevation, region = Name)
 
+head(nz_height_left_join)
 ```
 
 Now we could use this data to summarize the number of highest point in each region!
 
 ```{r}
-
+nz_height_left_join |> 
+  group_by(region) |> 
+  summarise(n_points = n()) |> 
+  st_drop_geometry()
 ```
 
 #### Distance-based joins
@@ -252,19 +269,28 @@ We'll use the following two datasets from the `spData` package:
 In this example, we would like join the `capacity` attribute from the `cycle_hire_osm` dataset to the `cycle_hire` dataset. Unfortunately it appears that the points from the two datasets do not perfectly align.
 
 ```{r}
+cycle_hire <- spData::cycle_hire
 
+cycle_hire_osm <- spData::cycle_hire_osm
 ```
 
 ```{r}
-
+if(any(st_intersects(cycle_hire, cycle_hire_osm, sparse = FALSE))){
+  print("points overlap")
+}else{
+  print("points don't overlap")
+}
 
 ```
 
 
-
-
 ```{r}
+tmap_mode("view") 
 
+tm_shape(cycle_hire) +
+  tm_symbols(fill = "red", fill_alpha = 0.2) +
+tm_shape(cycle_hire_osm) +
+  tm_symbols(fill = "blue", fill_alpha = 0.2)
 
 ```
 
@@ -273,26 +299,47 @@ In this example, we would like join the `capacity` attribute from the `cycle_hir
 We can join by again using `st_join()`, but this time including a distance threshold using `st_is_within_distance`.
 
 ```{r}
+# geometry is sticky so we never really have to specify that part
+cycle_hire_join <- st_join(cycle_hire, cycle_hire_osm, 
+        st_is_within_distance, 
+        dist = units::set_units(20, "m")) |> 
+        select(id, capacity)
 
+head(cycle_hire_join)
 ```
 
 Let's build some checks to diagnose the output.
 
 ```{r}
-
+if(nrow(cycle_hire) == nrow(cycle_hire_join)){
+  print("join matches original data matches")
+}else{
+  warning("join does not match original data dimensions")
+  print(paste("cycle_hire has ", nrow(cycle_hire), "rows"))
+  print(paste("cycle_hire_join has", nrow(cycle_hire_join), "rows"))
+}
 ```
 
 Note that the joined result has more rows than the target data. This is because some of the cycle hire stations in `cycle_hire` have multiple matches in `cycle_hire_osm`. Depending on your project, you would need to think about how to resolve this. In this case, we can aggregate the values for the overlapping points by taking the mean.
 
 ```{r}
-
+# Aggregate values for single points in cycle hire
+cycle_hire_join <- cycle_hire_join |> 
+  group_by(id) |> 
+  summarize(capacity = mean(capacity))
 ```
 
 
 Check again to see that there is now no overlap. Each id that originally had multiple bikes iwthin 20 km, now has a single average capacity. 
 
 ```{r}
-
+if(nrow(cycle_hire) == nrow(cycle_hire_join)){
+  print("join matches original data matches")
+}else{
+  warning("join does not match original data dimensions")
+  print(paste("cycle_hire has ", nrow(cycle_hire), "rows"))
+  print(paste("cycle_hire_join has", nrow(cycle_hire_join), "rows"))
+}
 ```
 
 
@@ -307,7 +354,11 @@ Let's consider the example where we would like to make a map of the mean elevati
 The first approach is by leveraging `st_join()` again. But in this example, we want the `nz` object to be the target to maintain the geometries we need.
 
 ```{r}
+tmap_mode("plot")
 
+nz_elevation_join <- st_join(x = nz, y = nz_height) |> 
+  group_by(Name) |> 
+  summarise(elevation = mean(elevation, na.rm = TRUE))
 ```
 
 The second approah uses the `aggregate()` function. Although it doesn't follow the `dplyr` piping convention we're used to, `aggregate()` will come in handy later, so it's nice to see how it works.
@@ -315,14 +366,23 @@ The second approah uses the `aggregate()` function. Although it doesn't follow t
 The syntax looks slightly different, in this case the argument `x` is the data we would like to aggregate (`nz_height`) and the `by` argument specifies the geometry that you would like to group by. The `FUN` argument defines the function that you would like to use to aggregate, in this case `mean`.
 
 ```{r}
+nz_elevation_agg <- aggregate(x = nz_height, by = nz, FUN = mean)
 ```
 
 
 ```{r}
+map1 <- tm_shape(nz_elevation_join) +
+  tm_polygons(fill = "elevation",
+  fill.legend =  tm_legend(title = "Mean elevations (meters)")) +
+  tm_title(text = "group_by()")
 
+map2 <- tm_shape(nz_elevation_agg) +
+  tm_polygons(fill = "elevation",
+  fill.legend =  tm_legend(title = "Mean elevations (meters)")) +
+  tm_title(text = "aggregate()")
 
+tmap_arrange(map1, map2, nrow = 1)
 ```
-
 
 # Joining incongruent layers
 
@@ -332,6 +392,14 @@ However, in some cases the aggregating zones do not share common borders with th
 
 
 ```{r}
+incongruent <- spData::incongruent
+aggregating_zones <- spData::aggregating_zones
+
+tm_shape(incongruent) +
+  tm_polygons(fill = "value",
+              fill.legend = tm_legend(title = "Value (Millions of euros)")) +
+tm_shape(aggregating_zones) +
+  tm_borders(col = "red", lwd = 2)
 
 ```
 
@@ -340,7 +408,14 @@ The simplest useful method for this is area weighted spatial interpolation, whic
 Let us assume that the `value` column of `incongruent` refers to total regional income in million Euros. We want to transfer these values from the nine underlying polygons into the two `aggregating_zones` polygons proportionally by area overlap.
 
 ```{r}
+incongruent2 <- incongruent |> 
+  select(value)
 
+aggregating_zones_area_weighted <- st_interpolate_aw(
+      x = incongruent2, 
+      aggregating_zones, 
+      extensive = TRUE   # use TRUE when counts, FALSE when rates, density, etc
+)
 ```
 
 
@@ -348,7 +423,19 @@ We can compare the original values with the interpolated result to see how value
 
 
 ```{r}
+map1 <- tm_shape(incongruent) +
+  tm_polygons(fill = "value",
+  fill.legend = tm_legend(title = "Value (millions of euros)")) +
+    tm_title(text = "Original (9 polygons)")
 
+map2 <- tm_shape(aggregating_zones_area_weighted) +
+  tm_polygons(fill = "value", 
+  fill.legend = tm_legend(title = "Value (millions of euros)")) +
+    tm_shape(incongruent) +
+    tm_borders(col = "grey50", lwd = 0.05) +
+    tm_title(text = " interpolated (2 zones)")
+  
+tmap_arrange(map1, map2, nrow = 1)
 ```
 
 
@@ -375,19 +462,95 @@ We may come across situations where we would like to summarize data across sever
 #| message: false
 #| warning: false
 
+us_states <- spData::us_states
 
+# Summarize total population within each region
+regions1 <- us_states |> 
+  group_by(REGION) |> 
+  summarise(population = sum(total_pop_15, na.rm = TRUE))
+
+# alternative approach
+regions2 <- aggregate(x = us_states[, "total_pop_15"], 
+                      by = list(us_states$REGION),
+                      FUN = sum, na.rm = TRUE)
 ```
 
+```{r}
+map1 <- tm_shape(us_states) +
+  tm_polygons(fill = "total_pop_15",
+              fill.legend  = tm_legend("Total population")) +
+  tm_title(text = "US States")
+
+map2 <- tm_shape(regions1) +
+  tm_polygons(fill = "population",
+              fill.legend  = tm_legend("Total population")) +
+  tm_title(text = "group_by()")
+
+map3 <- tm_shape(regions2) +
+  tm_polygons(fill = "total_pop_15",
+              fill.legend  = tm_legend("Total population")) +
+  tm_title(text = "aggregate()")
+
+tmap_arrange(map1, map2, map3, nrow = 1)
+```
 What's going on here? Behind the scenes, R is using `st_union()` to combine geometries within each group. We can also use `st_union()` to combine any pair of spatial objects.
 
 ```{r}
+# combine geometries of western states
+us_west <- us_states[us_states$REGION == "West", ]
+us_west_union <- st_union(us_west)
+
+# combine geometries of Texas and western states
+texas <- us_states[us_states$NAME == "Texas", ]
+texas_union <- st_union(us_west_union, texas)
 
 ```
+
+```{r}
+maryland <- us_states[us_states$NAME == "Maryland", ]
+california <- us_states[us_states$NAME == "California", ]
+md_ca <- st_union(maryland, california)
+```
+
+```{r}
+map1 <- tm_shape(maryland) +
+  tm_polygons() +
+  tm_title(text = "maryland")
+
+map2 <- tm_shape(md_ca) +
+  tm_polygons() +
+  tm_title(text = "md_ca")
+
+map3 <- tm_shape(california) +
+  tm_polygons() +
+  tm_title(text = "ca")
+
+map1
+map2
+map3
+```
+
 
 ```{r}
 #| message: false
 #| warning: false
+map1 <- tm_shape(us_west) +
+  tm_polygons() +
+  tm_title(text = "western states")
 
+map2 <- tm_shape(us_west_union) +
+  tm_polygons() +
+  tm_title(text = "western states union")
+
+map3 <- tm_shape(texas) +
+  tm_polygons() +
+  tm_title(text = "TX")
+
+map4 <- tm_shape(texas_union) +
+  tm_polygons() +
+  tm_title(text = "TX + western states union")
+
+tmap_arrange(map1, map2, map3, map4, nrow = 2)
 
 ```
 
@@ -399,20 +562,41 @@ In the previous section, we saw that we can filter spatial objects based on thei
 
 In this example, let's create 5 km and 50 km buffers around the Seine.
 ```{r}
+seine_buffer_5km <- st_buffer(seine, dist = units::set_units(5, "km"))
+seine_buffer_50km <- st_buffer(seine, dist = units::set_units(50, "km"))
+
 
 ```
 
 ```{r}
+map1 <- tm_shape(seine_buffer_5km) +
+  tm_polygons() +
+  tm_shape(seine) +
+  tm_lines() +
+  tm_title(text = "5km buffer")
+
+map2 <- tm_shape(seine_buffer_50km) +
+  tm_polygons() +
+  tm_shape(seine) +
+  tm_lines() +
+  tm_title(text = "50km buffer")
+
+tmap_arrange(map1, map2, nrow = 1)
 
 ```
 
 The Seine is actually comprised of multiple geometries. To make things simpler, and more look better on maps, we can combine geometries using our new friend `st_union`!
 
 ```{r}
+seine_union <- st_union(seine_buffer_50km)
 ```
 
 ```{r}
-
+tm_shape(seine_union) +
+  tm_polygons() +
+  tm_shape(seine) +
+  tm_lines() +
+  tm_title(text= "50km buffer")
 ```
 
 Now let's see an example of using a buffer to find objects within a set distance. Here, we'll repeat our previous example of finding points within 100 km of Canterbury. And check to see if the results match our previous approach!
@@ -525,11 +709,31 @@ Sometimes the geographic centroid may fall outside of the boundaries of the obje
 Let's inspect a few examples!
 
 ```{r}
+nz_centroid <- st_centroid(nz)
+seine_centroid <- st_centroid(seine)
 
+#going to the closest line to the center. not the actual center, but the visual
+# you would be using st_centroid if the object is enclosed. 
+nz_pos <- st_point_on_surface(nz)
+seine_pos <- st_point_on_surface(seine)
 ```
 
 ```{r}
+map1 <- tm_shape(nz) +
+  tm_polygons() +
+  tm_shape(nz_centroid) +
+  tm_symbols(fill = "red", fill_alpha = 0.5) +
+  tm_shape(nz_pos) +
+  tm_symbols(fill = "blue", fill_alpha = 0.5)
 
+map2 <- tm_shape(seine) +
+  tm_lines() +
+  tm_shape(seine_centroid) +
+  tm_symbols(fill = "red", fill_alpha = 0.5) +
+  tm_shape(seine_pos) +
+  tm_symbols(fill = "blue", fill_alpha = 0.5)
+
+tmap_arrange(map1, map2, nrow = 1)
 ```
 
 ### Simplification
@@ -537,7 +741,17 @@ We may also want to simplify a `geometry` to make it easier to plot or take up l
 
 Let's see an example!
 ```{r}
+seine_simple <- st_simplify(seine, dTolerance = 2000)
 
+map1 <- tm_shape(seine) +
+  tm_lines() +
+  tm_title("original")
+
+map2 <- tm_shape(seine_simple) +
+  tm_lines() +
+  tm_title("st_simplify()")
+
+tmap_arrange(map1, map2, nrow = 1)
 ```
 
 ```{r}

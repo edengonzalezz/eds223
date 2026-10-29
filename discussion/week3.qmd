@@ -1,0 +1,154 @@
+```{r}
+library(here)
+library(tidyverse)
+library(sf)
+library(tmap)
+```
+
+
+```{r}
+sb_protected_areas <- st_read(here("discussion", "data", "week3", "cpad_super_units_sb.shp")) |>  
+  st_transform("ESRI:102009")
+
+sb_city_boundaries <- st_read(here("discussion", "data","week3", "sb_city_boundaries_2003.shp")) |> 
+  st_transform("ESRI:102009")
+
+sb_county_boundary <- st_read(here("discussion", "data", "week3", "sb_county_boundary_2020.shp")) |> 
+  st_transform("ESRI:102009")
+
+aves <- st_read(here("discussion", "data", "week3", "aves_observations_2020_2024.shp")) |> 
+  st_transform("ESRI:102009")
+```
+
+
+```{r}
+# How many bird obervations are within protected areas in Santa Barbara
+aves_PA_subset <- sb_protected_areas[aves, ]
+```
+
+```{r}
+nrow(aves_PA_subset)
+```
+of 369 observations, only 35 contain at least one of the 500 bird observations 
+
+```{r}
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_PA_subset) +
+    tm_dots(col = "#023047")
+```
+
+ 
+
+```{r}
+# Use join
+aves_PA_join <- st_join(aves, sb_protected_areas)
+nrow(aves_PA_join)
+```
+`st_join()` defaults to `st_intersects()` too. but it keeps EVERY observation. it will plot all the data from aves and all the data in sb_protected_areas, not only the ones where they strictly intersect.
+
+
+
+
+
+Make a 5 km buffer around the protected areas and subset buffered geometries to only those with bird observations
+
+```{r}
+# Check if the units are in m 
+st_crs(sb_protected_areas)$units
+PA_buffer_5km <- st_buffer(sb_protected_areas, dist = 5000)
+```
+
+```{r}
+aves_buffer_subset <- PA_buffer_5km[aves, ] # Subset
+
+nrow(aves_buffer_subset) # Check number of rows
+```
+
+```{r}
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_buffer_subset) +
+  tm_dots(col = "#023047")
+```
+
+```{r}
+sb_PA_buffer <- st_buffer(sb_protected_areas, dist = 5000)
+sb_PA_b_union <- st_union(sb_PA_buffer)
+```
+
+```{r}
+tm_shape(sb_county_boundary) +
+  tm_fill() +
+  tm_shape(sb_protected_areas) +
+    tm_borders(lwd = 1, col = "#fb8500") +
+    tm_fill(col = "#fb8500", alpha = 0.2) +
+  tm_shape(aves_buffer_subset) +
+  tm_dots(col = "#023047")
+```
+
+
+```{r}
+# subset sb county to goleta
+goleta <- sb_city_boundaries |> 
+    filter(NAME == "Goleta")
+
+# check the units. is it in m? 
+st_crs(goleta)$units
+
+# create a 15 km buffer around goleta
+goleta_buffer_15km <- st_buffer(goleta, dist = 15000)
+```
+
+
+```{r}
+goleta_PAs_within <- st_within(sb_protected_areas, goleta_buffer_15km)
+
+goleta_PAs_intersect <- st_intersects(sb_protected_areas, goleta_buffer_15km)
+
+goleta_PAs_intersection <- st_intersection(sb_protected_areas, goleta_buffer_15km)
+```
+every within is also an intersects. 
+
+
+
+```{r}
+# distance-based join 
+goleta_PAs_join <- st_join(sb_protected_areas, goleta, st_is_within_distance, dist = 15000)
+```
+
+
+
+
+```{r}
+# Subset PA to Dangermond Preserve
+dangermond <- sb_protected_areas |>
+  dplyr::filter(UNIT_NAME == "Jack and Laura Dangermond Preserve")
+```
+
+```{r}
+danger_dist <- st_distance(goleta, dangermond) # Compute the distance between geometries edges
+```
+
+
+```{r}
+# Calculate the geometric center
+dangermond_centroid <- st_centroid(dangermond)
+goleta_centroid <- st_centroid(goleta)
+
+danger_dist_centroid <- st_distance(goleta_centroid, dangermond_centroid) # Compute the distance between geometries edges
+```
+
+
+```{r}
+# Check if the distance matrices are equal
+danger_dist == danger_dist_centroid
+```
+
+
